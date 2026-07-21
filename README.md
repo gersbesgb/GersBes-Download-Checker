@@ -28,10 +28,6 @@ powershell -ExecutionPolicy Bypass -Command "Invoke-Expression (Invoke-RestMetho
 
 > If PowerShell blocks the script, you may need to unblock the file or adjust your execution policy.
 
-## What It Checks
-
-By default the script checks the inputed path which will likely be the mod folder of the suspect.
-
 ## Customization
 
 You can easily modify the script to:
