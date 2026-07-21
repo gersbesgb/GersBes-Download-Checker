@@ -30,7 +30,7 @@ $Banner = @"
 ==========================================================================
 "@
 
-Write-Host $Banner -ForegroundColor Cyan
+Write-Host $Banner -ForegroundColor Green
 
 function Get-InstalledAppMap {
     $Map = @{}
