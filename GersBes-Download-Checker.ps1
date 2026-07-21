@@ -10,12 +10,12 @@ $Banner = @"
 ╚██████╔╝███████╗██║  ██║███████║██████╔╝███████╗███████║
  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚═════╝ ╚══════╝╚══════╝
 
-██████╗  ██████╗ ██╗    ██╗███╗   ██╗██╗      ██████╗  █████╗ ██████╗
-██╔══██╗██╔═══██╗██║    ██║████╗  ██║██║     ██╔═══██╗██╔══██╗██╔══██╗
+██████╗  ██████╗ ██╗    ██╗███╗    ██╗██╗      ██████╗  █████╗ ██████╗
+██╔══██╗██╔═══██╗██║    ██║████╗   ██║██║     ██╔═══██╗██╔══██╗██╔══██╗
 ██║  ██║██║   ██║██║ █╗ ██║██╔██╗ ██║██║     ██║   ██║███████║██║  ██║
 ██║  ██║██║   ██║██║███╗██║██║╚██╗██║██║     ██║   ██║██╔══██║██║  ██║
 ██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║███████╗╚██████╔╝██║  ██║██████╔╝
-╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝
+╚═════╝  ╚═════╝ ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝
 
  ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗███████╗██████╗
 ██╔════╝██║  ██║██╔════╝██╔════╝██║ ██╔╝██╔════╝██╔══██╗
@@ -26,7 +26,7 @@ $Banner = @"
 
 ==========================================================================
                     GersBes's Download Checker v1.0
-                          Created by GersBes
+                         Created by GersBes
 ==========================================================================
 "@
 
@@ -98,6 +98,21 @@ function Get-BrowserDownloadUrl {
     return $null
 }
 
+function Format-SourceUrl {
+    param([string]$Url)
+
+    if ($Url -match "cdn\.discordapp\.com/attachments/(\d+)/(\d+)") {
+        $ChannelId = $Matches[1]
+        return "Discord Attachment (Channel/DM ID: $ChannelId) -> $Url"
+    }
+    if ($Url -match "media\.discordapp\.net/attachments/(\d+)/(\d+)") {
+        $ChannelId = $Matches[1]
+        return "Discord Media (Channel/DM ID: $ChannelId) -> $Url"
+    }
+
+    return $Url
+}
+
 $AppMap = Get-InstalledAppMap
 $LauncherMap = Get-LauncherMap
 
@@ -107,7 +122,25 @@ Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyCon
     $RemovableDrives[$_.DeviceID] = $Label
 }
 
-function Get-FileOrigin {
+function Check-ImportParent {
+    param([string]$File)
+    
+    $Directory = Split-Path -Parent $File
+    $ImportArchives = Get-ChildItem -Path $Directory -Include "*.zip", "*.mrpack", "*.curseforge", "*.rar", "*.7z" -File -ErrorAction SilentlyContinue
+    
+    foreach ($Archive in $ImportArchives) {
+        $ArchiveOrigin = Get-FileOriginInternal -File $Archive.FullName
+        if ($ArchiveOrigin -and $ArchiveOrigin -ne "Unknown") {
+            return [PSCustomObject]@{
+                ArchiveName = $Archive.Name
+                ArchiveOrigin = $ArchiveOrigin
+            }
+        }
+    }
+    return $null
+}
+
+function Get-FileOriginInternal {
     param([string]$File)
 
     $Zone = Get-Item -LiteralPath $File -Stream Zone.Identifier -ErrorAction SilentlyContinue
@@ -119,13 +152,13 @@ function Get-FileOrigin {
             if ($line -like "HostUrl=*")     { $HostUrl = $line.Substring(8) }
             if ($line -like "ReferrerUrl=*") { $RefUrl  = $line.Substring(13) }
         }
-        if ($HostUrl) { return $HostUrl }
-        if ($RefUrl)  { return $RefUrl }
+        if ($HostUrl) { return Format-SourceUrl -Url $HostUrl }
+        if ($RefUrl)  { return Format-SourceUrl -Url $RefUrl }
     }
 
     $FileName = Split-Path -Leaf $File
     $BrowserUrl = Get-BrowserDownloadUrl -FileName $FileName
-    if ($BrowserUrl) { return $BrowserUrl }
+    if ($BrowserUrl) { return Format-SourceUrl -Url $BrowserUrl }
 
     $DriveRoot = (Get-Item -LiteralPath $File).PSDrive.Root
     $DriveLetter = ($DriveRoot -replace '\\$','')
@@ -151,15 +184,28 @@ function Get-FileOrigin {
     if ($FullPath -match "Dropbox")  { return "Dropbox sync" }
     if ($FullPath -match "^\\\\")    { return "network share" }
 
-    if ($FullPath -match "\\AppData\\Local\\Temp\\") { return "temp/extracted" }
-    if ($FullPath -match "\\Downloads\\") { return "web (no zone/history data)" }
-
-    try {
-        $Acl = Get-Acl -LiteralPath $File -ErrorAction Stop
-        if ($Acl.Owner) { return "local (owner: $($Acl.Owner))" }
-    } catch {}
-
     return "Unknown"
+}
+
+function Get-FileOrigin {
+    param([string]$File)
+
+    $DirectOrigin = Get-FileOriginInternal -File $File
+    
+    if ($DirectOrigin -ne "Unknown") {
+        return @{ Type = "Direct"; Origin = $DirectOrigin }
+    }
+
+    $ImportInfo = Check-ImportParent -File $File
+    if ($ImportInfo) {
+        return @{
+            Type = "Imported"
+            Importer = $ImportInfo.ArchiveName
+            Origin = $ImportInfo.ArchiveOrigin
+        }
+    }
+
+    return @{ Type = "Direct"; Origin = "Unknown" }
 }
 
 Write-Host ""
@@ -185,11 +231,18 @@ $TotalCount = 0
 foreach ($Path in $Paths) {
     Get-ChildItem $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
         $TotalCount++
-        $Origin = Get-FileOrigin $_.FullName
-        if ($Origin -eq "Unknown") { $UnknownCount++ }
+        $Result = Get-FileOrigin $_.FullName
+        
+        if ($Result.Origin -eq "Unknown") { $UnknownCount++ }
 
-        Write-Host "$($_.Name): " -NoNewline -ForegroundColor White
-        Write-Host "$Origin" -ForegroundColor Green
+        Write-Host "$($_.Name): " -ForegroundColor White
+        
+        if ($Result.Type -eq "Imported") {
+            Write-Host " + $($Result.Importer): " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($Result.Origin)" -ForegroundColor Green
+        } else {
+            Write-Host "$($Result.Origin)" -ForegroundColor Green
+        }
     }
 }
 
