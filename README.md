@@ -23,7 +23,7 @@ A PowerShell utility by **GersBes** that scans common Windows download locations
 4. Run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "Invoke-Expression (Invoke-RestMethod 'https://raw.githubusercontent.com/gersbesgb/GersBes-s-Download-Checker/main/GersBes-Download-Checker.ps1')"
+powershell -ExecutionPolicy Bypass -Command "Invoke-Expression (Invoke-RestMethod 'https://raw.githubusercontent.com/gersbesgb/GersBes-Download-Checker/main/GersBes-Download-Checker.ps1')"
 ```
 
 > If PowerShell blocks the script, you may need to unblock the file or adjust your execution policy.
