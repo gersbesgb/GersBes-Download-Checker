@@ -25,7 +25,7 @@ $Banner = @"
  ╚═════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 
 ==========================================================================
-                    GersBes's Download Checker v1.0
+                    GersBes's Download Checker v1.1
                          Created by GersBes
 ==========================================================================
 "@
@@ -103,11 +103,11 @@ function Format-SourceUrl {
 
     if ($Url -match "cdn\.discordapp\.com/attachments/(\d+)/(\d+)") {
         $ChannelId = $Matches[1]
-        return "Discord Attachment (Channel/DM ID: $ChannelId) -> $Url"
+        return "Discord Server/DM (ID: $ChannelId) -> $Url"
     }
     if ($Url -match "media\.discordapp\.net/attachments/(\d+)/(\d+)") {
         $ChannelId = $Matches[1]
-        return "Discord Media (Channel/DM ID: $ChannelId) -> $Url"
+        return "Discord Server/DM (ID: $ChannelId) -> $Url"
     }
 
     return $Url
@@ -126,14 +126,14 @@ function Check-ImportParent {
     param([string]$File)
     
     $Directory = Split-Path -Parent $File
-    $ImportArchives = Get-ChildItem -Path $Directory -Include "*.zip", "*.mrpack", "*.curseforge", "*.rar", "*.7z" -File -ErrorAction SilentlyContinue
+    $ImportArchives = Get-ChildItem -Path $Directory -Include "*.zip", "*.mrpack", "*.curseforge", "*.rar", "*.7z", "*.exe" -File -ErrorAction SilentlyContinue
     
     foreach ($Archive in $ImportArchives) {
-        $ArchiveOrigin = Get-FileOriginInternal -File $Archive.FullName
-        if ($ArchiveOrigin -and $ArchiveOrigin -ne "Unknown") {
+        $ArchiveData = Get-FileOriginInternal -File $Archive.FullName
+        if ($ArchiveData.Origin -ne "Unknown") {
             return [PSCustomObject]@{
                 ArchiveName = $Archive.Name
-                ArchiveOrigin = $ArchiveOrigin
+                ArchiveOrigin = $ArchiveData.Origin
             }
         }
     }
@@ -152,39 +152,39 @@ function Get-FileOriginInternal {
             if ($line -like "HostUrl=*")     { $HostUrl = $line.Substring(8) }
             if ($line -like "ReferrerUrl=*") { $RefUrl  = $line.Substring(13) }
         }
-        if ($HostUrl) { return Format-SourceUrl -Url $HostUrl }
-        if ($RefUrl)  { return Format-SourceUrl -Url $RefUrl }
+        if ($HostUrl) { return @{ Type="Web"; Origin=(Format-SourceUrl -Url $HostUrl) } }
+        if ($RefUrl)  { return @{ Type="Web"; Origin=(Format-SourceUrl -Url $RefUrl) } }
     }
 
     $FileName = Split-Path -Leaf $File
     $BrowserUrl = Get-BrowserDownloadUrl -FileName $FileName
-    if ($BrowserUrl) { return Format-SourceUrl -Url $BrowserUrl }
+    if ($BrowserUrl) { return @{ Type="Web"; Origin=(Format-SourceUrl -Url $BrowserUrl) } }
 
     $DriveRoot = (Get-Item -LiteralPath $File).PSDrive.Root
     $DriveLetter = ($DriveRoot -replace '\\$','')
     if ($RemovableDrives.ContainsKey($DriveLetter)) {
-        return "usb:$($RemovableDrives[$DriveLetter])"
+        return @{ Type="USB"; Origin="usb:$($RemovableDrives[$DriveLetter])" }
     }
 
     $FullPath = (Get-Item -LiteralPath $File).FullName
 
     foreach ($Loc in $LauncherMap.Keys) {
         if ($FullPath.StartsWith($Loc, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $LauncherMap[$Loc]
+            return @{ Type="App"; Origin=$LauncherMap[$Loc] }
         }
     }
 
     foreach ($Loc in $AppMap.Keys) {
         if ($FullPath.StartsWith($Loc, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $AppMap[$Loc]
+            return @{ Type="App"; Origin=$AppMap[$Loc] }
         }
     }
 
-    if ($FullPath -match "OneDrive") { return "OneDrive sync" }
-    if ($FullPath -match "Dropbox")  { return "Dropbox sync" }
-    if ($FullPath -match "^\\\\")    { return "network share" }
+    if ($FullPath -match "OneDrive") { return @{ Type="Sync"; Origin="OneDrive Sync" } }
+    if ($FullPath -match "Dropbox")  { return @{ Type="Sync"; Origin="Dropbox Sync" } }
+    if ($FullPath -match "^\\\\")    { return @{ Type="Network"; Origin="Network Share" } }
 
-    return "Unknown"
+    return @{ Type="Unknown"; Origin="Unknown" }
 }
 
 function Get-FileOrigin {
@@ -192,20 +192,21 @@ function Get-FileOrigin {
 
     $DirectOrigin = Get-FileOriginInternal -File $File
     
-    if ($DirectOrigin -ne "Unknown") {
-        return @{ Type = "Direct"; Origin = $DirectOrigin }
+    if ($DirectOrigin.Type -eq "Web") {
+        return @{ Type = "Web"; Origin = $DirectOrigin.Origin; Name = (Split-Path -Leaf $File) }
     }
 
     $ImportInfo = Check-ImportParent -File $File
     if ($ImportInfo) {
         return @{
             Type = "Imported"
-            Importer = $ImportInfo.ArchiveName
             Origin = $ImportInfo.ArchiveOrigin
+            Importer = $ImportInfo.ArchiveName
+            Name = (Split-Path -Leaf $File)
         }
     }
 
-    return @{ Type = "Direct"; Origin = "Unknown" }
+    return @{ Type = $DirectOrigin.Type; Origin = $DirectOrigin.Origin; Name = (Split-Path -Leaf $File) }
 }
 
 Write-Host ""
@@ -225,31 +226,72 @@ Write-Host ""
 Write-Host "Scanning..." -ForegroundColor Green
 Write-Host ""
 
-$UnknownCount = 0
-$TotalCount = 0
+$Results_Web = @()
+$Results_Imported = @()
+$Results_App = @()
+$Results_Unknown = @()
 
 foreach ($Path in $Paths) {
     Get-ChildItem $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $TotalCount++
         $Result = Get-FileOrigin $_.FullName
         
-        if ($Result.Origin -eq "Unknown") { $UnknownCount++ }
-
-        Write-Host "$($_.Name): " -ForegroundColor White
-        
-        if ($Result.Type -eq "Imported") {
-            Write-Host " + $($Result.Importer): " -NoNewline -ForegroundColor Yellow
-            Write-Host "$($Result.Origin)" -ForegroundColor Green
-        } else {
-            Write-Host "$($Result.Origin)" -ForegroundColor Green
-        }
+        if ($Result.Type -eq "Web") { $Results_Web += $Result }
+        elseif ($Result.Type -eq "Imported") { $Results_Imported += $Result }
+        elseif ($Result.Type -eq "App") { $Results_App += $Result }
+        else { $Results_Unknown += $Result }
     }
 }
 
-Write-Host ""
+if ($Results_Web.Count -gt 0) {
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Write-Host "       KNOWN WEBSITES / DIRECT WEB       " -ForegroundColor Cyan
+    Write-Host "=========================================" -ForegroundColor Cyan
+    foreach ($r in $Results_Web) {
+        Write-Host "$($r.Name): " -NoNewline -ForegroundColor White
+        Write-Host "$($r.Origin)" -ForegroundColor Green
+    }
+    Write-Host ""
+}
+
+if ($Results_Imported.Count -gt 0) {
+    Write-Host "=========================================" -ForegroundColor Yellow
+    Write-Host "    IMPORTED / INJECTED (VIA EXE/ZIP)    " -ForegroundColor Yellow
+    Write-Host "=========================================" -ForegroundColor Yellow
+    foreach ($r in $Results_Imported) {
+        Write-Host "$($r.Name):" -ForegroundColor White
+        Write-Host " + $($r.Importer): " -NoNewline -ForegroundColor Yellow
+        Write-Host "$($r.Origin)" -ForegroundColor Green
+    }
+    Write-Host ""
+}
+
+if ($Results_App.Count -gt 0) {
+    Write-Host "=========================================" -ForegroundColor Magenta
+    Write-Host "        DOWNLOADED VIA KNOWN APP         " -ForegroundColor Magenta
+    Write-Host "=========================================" -ForegroundColor Magenta
+    foreach ($r in $Results_App) {
+        Write-Host "$($r.Name): " -NoNewline -ForegroundColor White
+        Write-Host "$($r.Origin)" -ForegroundColor Magenta
+    }
+    Write-Host ""
+}
+
+if ($Results_Unknown.Count -gt 0) {
+    Write-Host "=========================================" -ForegroundColor DarkGray
+    Write-Host "          UNKNOWN / LOCAL FILES          " -ForegroundColor DarkGray
+    Write-Host "=========================================" -ForegroundColor DarkGray
+    foreach ($r in $Results_Unknown) {
+        Write-Host "$($r.Name): " -NoNewline -ForegroundColor White
+        Write-Host "$($r.Origin)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+}
+
+$TotalCount = $Results_Web.Count + $Results_Imported.Count + $Results_App.Count + $Results_Unknown.Count
 if ($TotalCount -gt 0) {
-    $Pct = [math]::Round(($UnknownCount / $TotalCount) * 100, 2)
-    Write-Host "Scan Complete. $UnknownCount / $TotalCount unknown ($Pct%)." -ForegroundColor Green
+    $Pct = [math]::Round(($Results_Unknown.Count / $TotalCount) * 100, 2)
+    Write-Host "Scan Complete. $TotalCount files scanned." -ForegroundColor Green
+    Write-Host "$($Results_Unknown.Count) files lacked trace metadata ($Pct%)." -ForegroundColor Green
 } else {
     Write-Host "Scan Complete. No files found." -ForegroundColor Green
 }
